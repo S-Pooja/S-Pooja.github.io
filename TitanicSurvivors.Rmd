@@ -434,7 +434,7 @@ plot(glf, top=20)
 
 - If model is to be simplified, we could try removing Parch and SibSp features. 
 
-- The prediction accuracy expected in the test dataset is ~83% using the GLM model.
+- The prediction accuracy expected in the test dataset is ~83% using the GBM model.
 
 ## FITTING THE GBM MODEL TO THE TEST DATA SET
 ```{r, fig.width=5, fig.height=8, warning=FALSE, message=FALSE}
