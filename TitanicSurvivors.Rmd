@@ -1,0 +1,467 @@
+---
+title: "TitanicSurivors"
+author: "Pooja"
+date: "March 20, 2016"
+output: html_document
+---
+##OVERVIEW
+The sinking of the RMS Titanic is one of the most infamous shipwrecks in history.  On April 15, 1912, during her maiden voyage, the Titanic sank after colliding with an iceberg, killing 1502 out of 2224 passengers and crew. This sensational tragedy shocked the international community and led to better safety regulations for ships.
+
+One of the reasons that the shipwreck led to such loss of life was that there were not enough lifeboats for the passengers and crew. Although there was some element of luck involved in surviving the sinking, some groups of people were more likely to survive than others, such as women, children, and the upper-class.
+
+In this challenge, we complete the analysis of what sorts of people were likely to survive. In particular, we apply the tools of machine learning to predict which passengers survived the tragedy.
+
+##VARIABLE DESCRIPTIONS:
+-survival        Survival (0 = No; 1 = Yes)  
+
+-pclass          Passenger Class (1 = 1st; 2 = 2nd; 3 = 3rd)  
+
+-name            Name  
+
+-sex             Sex  
+
+-age             Age  
+
+-sibsp           Number of Siblings/Spouses Aboard  
+
+-parch           Number of Parents/Children Aboard  
+
+-ticket          Ticket Number  
+
+-fare            Passenger Fare  
+
+-cabin           Cabin  
+
+-embarked        Port of Embarkation (C = Cherbourg; Q = Queenstown; S = Southampton)  
+
+                
+
+##SPECIAL NOTES:
+- Pclass is a proxy for socio-economic status (SES)  
+ 
+ 1st ~ Upper; 2nd ~ Middle; 3rd ~ Lower   
+
+- Age is in Years; Fractional if Age less than One (1)  
+ 
+ If the Age is Estimated, it is in the form xx.5  
+
+#####With respect to the family relation variables (i.e. sibsp and parch) some relations were ignored.  The following are the definitions used for sibsp and parch.
+
+-Sibling:  Brother, Sister, Stepbrother, or Stepsister of Passenger Aboard Titanic  
+
+-Spouse:   Husband or Wife of Passenger Aboard Titanic (Mistresses and Fiances Ignored)   
+
+-Parent:   Mother or Father of Passenger Aboard Titanic  
+
+-Child:    Son, Daughter, Stepson, or Stepdaughter of Passenger Aboard Titanic
+
+#####Other family relatives excluded from this study include cousins, nephews/nieces, aunts/uncles, and in-laws.  Some children travelled only with a nanny, therefore parch=0 for them.  As well, some travelled with very close friends or neighbors in a village, however, the definitions do not support such relations.
+
+##DATA LOADING AND ANALYSIS
+```{r, fig.width=5, fig.height=8, warning=FALSE, message=FALSE}
+#Attach relevant packages
+library(caret)
+library(randomForest)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(reshape2)
+library(gridExtra)
+library(RColorBrewer)
+library(lattice)
+library(Amelia)
+library(miscTools)
+
+# Load data into an R data frame
+DataFile = read.csv("//Users//pooja//Desktop//DataScience//Kaggle//TitanicSurvivors//train.csv", na.strings = c("", " "))
+
+#View the data structure
+str(DataFile)
+
+#it is important to note that the cabin and Embarked have a "" value as a factor. which wont be picked up as a NA in computations.read as na.strings=TRUE
+
+#View the data header
+head(DataFile, 5)
+
+#View missing data levels for different features
+missmap(DataFile, main = "Missingness Map Train")
+```
+
+#####The main missing values include Cabin, Age and Fare. While the cabin numbers do not have any associated information (i.e. location map) to identify more information; both of Age and Fare can be important predictors of Survivability. 
+
+```{r, warning=FALSE, message=FALSE}
+print(paste0("Number of NA or missing values for Fare are ", sum(DataFile$Fare==0 + sum(is.na(DataFile$Fare)))))
+
+print(paste0("Number of NA values for Age are ", sum(is.na(DataFile$Age))))
+
+```
+## LOOKING AT DATA & UNDERSTANDING RELATIONSHIPS
+
+##### Looking at the relationship of age with other variables as possible method of imputing Age values.
+
+```{r, fig.width=10, fig.height=10, warning=FALSE, message=FALSE}
+# Relationship of Age (y) with other factors 
+featurePlot(x = DataFile[, c(3, 5, 7,8,10,12)],
+            y = DataFile$Age,
+            plot = "pairs")
+```
+
+#####It can be seen that age is somewhat correlated with # of Parent/children or number of siblings. This makes sense as a child would generally have at most 2 parents while a parent can have higher number of children, so if a passenger has a higher value of SibSp, it should be a good indicator of the Age values.
+
+
+```{r, warning=FALSE, message=FALSE}
+
+#Getting the Denomination of the passenger and add it to the data frame
+First <- gsub(pattern= ".*\\, ", replacement="", DataFile$Name)
+Denomination= gsub(pattern= "\\. .*", replacement="", First)
+DataFile <- mutate(DataFile, 
+             #Adding name denomination to the data frame
+             Denomination=Denomination)
+
+ggplot(DataFile, aes(x=SibSp, y=Age))+facet_grid(.~Parch)+geom_boxplot()
+
+ggplot(DataFile, aes(x=Denomination, y=Age))+geom_boxplot()
+
+ggplot(filter(DataFile, is.na(Age)), aes(x=SibSp))+facet_grid(.~Parch)+geom_bar()
+
+```
+
+
+- Since most of missing Age values are for the Parch of 0 (and 1 or 2), SibSp can be used for filling in the value of the age. 
+
+- However, name may be a better estimate with narrower estimation ranges for each category.
+
+- Furthermore Pclass is not a good estimator of age, as the age distribution is fairly uniform for all the classes.
+
+```{r, warning=FALSE, message=FALSE}
+ 
+ggplot(DataFile, aes(x=Pclass, y=Age))+geom_boxplot()+facet_grid(.~Embarked)
+
+```
+
+
+
+- For fare, Class of the passenger has a stronger effect than the port of embarkation. Hence it may be reasonable to impute the values with the median fare of the PClass of the passenger. 
+
+
+```{r, warning=FALSE, message=FALSE}
+
+
+ggplot(DataFile, aes(x=factor(Pclass), y=Fare))+geom_boxplot()+facet_grid(.~Embarked)
+
+```
+
+
+##CLEAN DATA AND FEATURE ENGINEERING
+
+#####Changes made to the data set:
+
+1. Filling missing age values from denomination of passenger name and gender.
+We notice from the summary that the Age has 177 NA's. It will be an important feature to access survivability, and should be filled up with an estimate of age for the remaining passengers. To find a good estimator of age, none of the class, embarking station, family size or sibling count appear to be definitively indicative of the passenger's age. However, we can get an estimate from the denomination of the passenger's name. Filing missing ages with median values for that name denomination (Mr, Miss, Dr, Mme etc.) and gender.
+
+2. To indicate the total adults and children associated with a passenger, create a new variable "FamilySize" as the sum of Parch and SibSp variables.
+
+3. Mapping categorical variables to numerical categories (i.e. Sex)
+
+4. Using median values for PClass for filling in missing values of Fare
+While Fare does not have NA's the minimum value is 0 and 15 passengers have the 0 value. Since we have the Pclass value for each individual, it would be reasonable to fill in the fare estimate as the median of the Pclass. Irrespective of the port of embarcation the class is a reasonable estimator of the fare.  
+
+5. Divide continuous variable Fare into discrete categories (i.e. Fare, Age)
+
+6. Creating new binary categorical variable indicating whether the ticket is a number only or there are alphabets in it. 
+
+7. Imputing the missing values of Embarked
+Embarked has 2 missing values. Since the median fare values for all the ports are fairly similar, the information of embarkation may be filled in as the mode of the ports. 
+
+8. Cabin data is very sparse. This may be an useful feature as position of the cabin from the exit or access to lifeboats can be an important indicator of suvivability. However, since the map is not available indicating the location of lifeboats and cabins, not much information can be gleaned here.   
+
+
+```{r, warning=FALSE, message=FALSE}
+
+#Defining the mode function
+getmode <- function(v, na.rm) {
+  if(na.rm){v=v[!is.na(v)]}
+  uniqv <- unique(v)
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+#Clean data function
+clean_data <- function (df_in){
+
+#Getting the Denomination of the passenger and adding it to the data frame
+First <- gsub(pattern= ".*\\, ", replacement="", df_in$Name)
+Denomination= gsub(pattern= "\\. .*", replacement="", First)
+df <- mutate(df_in, 
+             #Adding name denomination to the data frame
+             Denomination=Denomination)
+
+for (i in 1:dim(df)[1]){
+#Filling in missing Age values
+  if(is.na(df$Age[i])){
+    if(!is.na(Denomination[i])){
+    df$Age[i]=median ((filter(df, Denomination==Denomination[i]))$Age, na.rm=TRUE)
+  }
+  df$Age[i]= median(df$Age, na.rm=TRUE)
+    }
+  
+#Filling in missing Fare values
+  if(is.na(df$Fare[i]) | df$Fare[i]==0){
+   df$Fare[i]=median (filter(df, Embarked==Embarked[i] & Pclass==Pclass[i])$Fare, na.rm=TRUE)
+  }
+#Filling in missing port of Embarkation values
+  if(is.na(df$Embarked)[i]){
+   df$Embarked[i]=getmode (df$Embarked, na.rm=TRUE)}  
+}
+
+#Mutating the data frame with respective columns
+dfMutate = mutate(df, 
+       #Changing Sex to numeric value and saving as Gender
+       Gender=(as.numeric(df$Sex)), 
+       #Cutting Age into categories "AgeCategory"
+       AgeCategory = cut(df$Age, breaks=10*(0:10)),
+       #Cutting fare into categories "FareCategory"
+       FareCategory= cut(df$Fare, breaks=50*(0:20)),
+       #Adding Family size as the sum of SibSp and Parch values
+       FamilySize=(as.numeric(as.character(SibSp))+as.numeric(as.character(Parch))),
+       #Adding the identification if ticket has only numeric or alphanumeric values
+       TicketHasDigitAlpha= factor(as.numeric(grepl("[[:alpha:]]", df$Ticket) & grepl("[[:digit:]]", df$Ticket))
+       ))
+return(dfMutate)}
+
+```
+## IDENTIFYING IMPORTANT FEATURES
+
+```{r, fig.width=15, fig.height=5, warning=FALSE, message=FALSE}
+
+df=clean_data(DataFile)
+
+#Changing DataFile variables "SibSp", "FamilySize", and "Pclass"" to factors for plotting.
+df$Pclass =factor(as.numeric(as.character(df$Pclass)))
+df$SibSp =factor(as.numeric(as.character(df$SibSp)))
+df$Parch =factor(as.numeric(as.character(df$Parch)))
+df$FamilySize =factor(as.numeric(as.character(df$FamilySize)))
+
+#Generate plots for all the factors with "Survived" or "Not Survived"
+
+features<- c("Denomination", "Sex","FareCategory","Pclass","Embarked","TicketHasDigitAlpha","Parch","SibSp", "FamilySize")
+
+PlotLabels<- c("Denomination","Sex","FareCategory","Pclass","Embarked","TicketHasDigitAlpha","Parch","SibSp", "FamilySize")
+
+BreakValue<- list(levels(df$Denomination), c("female", "male"), levels(df$FareCategory), c("1", "2", "3"), c("C","Q","S"), c("0","1"),levels(factor(df$Parch)), levels(factor(df$SibSp)), levels(factor(df$FamilySize)))
+
+BreakLabels <- list(levels(df$Denomination),c("Female", "Male"), levels(df$FareCategory), c("ClassI", "ClassII", "ClassIII"), c("Cherbourg", "Queenstown", "Southampton"), c("No", "Yes"), levels(factor(df$Parch)),levels(factor(df$SibSp)), levels(factor(df$FamilySize)))
+
+
+pltList <- list()
+
+for ( i in 1:length(features)){
+grouped_data<- dplyr::group_by_(df, features[i])
+Summary_Data <- dplyr::summarise(grouped_data,
+  count = n(),
+  Surviving = sum(Survived, na.rm = TRUE))
+PlotSummaryData<- mutate(Summary_Data, 
+  NonSurviving = count-Surviving,
+  PercSurviving = Surviving*100/count,
+  PercNonSurviving = 100-PercSurviving) 
+
+# Make plot name
+plotName1 <- paste0( "Plot", i,"Perc" )
+
+colourCount = dim(PlotSummaryData)[1]
+
+P1= ggplot(data.frame(PlotSummaryData),
+           aes_string( y="PercSurviving", x=features[i], fill=features[i] ))+
+  geom_bar(stat="identity")+ 
+  scale_fill_manual(values = colorRampPalette(brewer.pal(8, "Reds"))(colourCount),
+                    name=PlotLabels[i],
+                    breaks=BreakValue[[i]],
+                    labels=BreakLabels[[i]])+
+  geom_text(aes(y=PercSurviving+1, 
+                label=round(PercSurviving,2)), 
+            vjust=1.5, colour="black")+
+  ylab("Surviving Passengers (%)")
+
+pltList[[plotName1]] = P1
+
+plotName2 <- paste0( "Plot", i,"Abs" )
+
+
+P2= ggplot(data.frame(PlotSummaryData),
+           aes_string( y="Surviving", x=features[i], fill=features[i] ))+
+  geom_bar(stat="identity")+ 
+  scale_fill_manual(values = colorRampPalette(brewer.pal(8, "Blues"))(colourCount), 
+                    name=PlotLabels[i],
+                    breaks=BreakValue[[i]],
+                    labels=BreakLabels[[i]])+
+  geom_text(aes(y=Surviving/2, 
+                label=(Surviving)), 
+            vjust=1.5, colour="black")+
+  ylab("Surviving Passengers (Absolute)")
+
+pltList[[plotName2]] = P2
+
+grid.arrange(P1, P2, ncol=2)
+
+}
+
+#do.call(grid.arrange, c(grobs=pltList, top="Feature Identification", ncol=2))
+
+
+```
+##### Observations on the importance of different features
+
+- % Survivability is lowest for the generic "Mr." title, while much higher for more specialized professions. 
+
+- A much larger % of women survived compared to males. This is reasonable since it is known that women and children were asked to board the lifeboats first.
+
+- A much larger % of 1st Class passengers survived compared to 3rd class.
+
+- Fare category shows higher survivability for more expensive tickets.
+
+- Passengers embarking in Cherbourg have a larger percentage of survival. 
+
+- People with 1, 2 or 3 FamilySize or Parch have a higher chance of survival. 
+
+- Ticket having alphabet or digits does not seem to be strongly correlated with survivability. 
+
+
+##SURVIVABILITY PREDICTIONS ON CHOSEN FEATURES USING GBM, RF and KNN MODELS
+
+```{r, warning=FALSE, message=FALSE}
+#Preparing training data set for normalization
+
+PrepareForNormalization<- function(df){
+  df$Embarked <- as.numeric(df$Embarked)
+  df$TicketHasDigitAlpha <- as.numeric(as.character(df$TicketHasDigitAlpha))
+  return(df)
+}
+
+#Normalizing the data. 
+
+normalizeFeatures=function (df,featureNames){
+    for (i in 1:length(featureNames)){
+      df1 = select_(df, featureNames[i])
+      NomalizedDF1 <- ((df1 - mean(df1[, 1], na.rm=TRUE))/(sd(df1[,1], na.rm=TRUE)))
+      df[,featureNames[i]] <-  NomalizedDF1
+       
+      }
+    return (df)
+    }
+
+featureNamesForNorm = c("Fare","Age","Gender","Pclass","Embarked", "TicketHasDigitAlpha","Parch","SibSp", "FamilySize")
+
+train_data <- clean_data(DataFile)
+train_data_Norm_Prep <- PrepareForNormalization(train_data)
+train_data_Norm_Prep$Survived <- factor(train_data_Norm_Prep$Survived)
+train_data_Norm = normalizeFeatures(train_data_Norm_Prep,featureNamesForNorm)
+
+#Running the training models (rf, gbm, and knn3)
+
+featureNames = c("Denomination", "Survived","Fare","Age","Gender","Pclass","Embarked","Parch","SibSp", "FamilySize")
+
+formula<- (Survived~Denomination+ Pclass + Age+ Gender+ SibSp + FamilySize+Embarked + Parch + Fare)
+
+
+#Defining train controlfor a 10 fold repeated cv method
+fitControlCV <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           #Number of folds
+                           number = 10,
+                           ## repeated ten times
+                           repeats = 10)
+
+#fitting gbm model
+
+gbmGrid <-  expand.grid(interaction.depth = c(1, 5, 9),
+                        n.trees = 150,
+                        shrinkage = 0.1,
+                        n.minobsinnode = 20)
+gbmFitCV <- train(formula, data = train_data_Norm,
+                 method = "gbm",
+                 trControl = fitControlCV,
+                 tuneGrid = gbmGrid,
+                 verbose=FALSE)
+
+#fitting rf model
+
+rfFitCV <- train(formula, data = train_data_Norm,
+                 method = "rf",
+                 trControl = fitControlCV) 
+
+#fitting k nearest neighbors
+
+knnFitCV <- train(formula, data = train_data_Norm,
+                 method = "knn",
+                 trControl = fitControlCV) 
+
+#Comparing the results of the 3 models
+ModelCompOnCV <- resamples(list(RF=rfFitCV, GBM=gbmFitCV, KNN=knnFitCV))
+
+# Summary of the Cross Validation Performance Distributions of Different Models
+summary(ModelCompOnCV)
+
+#Comparing performance statistics of each model against the training data set
+result.predictedgbm <- predict(gbmFitCV, train_data_Norm)
+result.predictedrf <- predict(rfFitCV, train_data_Norm)
+result.predictedknn <- predict(knnFitCV, train_data_Norm)
+
+rbind(RF=confusionMatrix(train_data_Norm$Survived, result.predictedrf)$overall, GBM=confusionMatrix(train_data_Norm$Survived, result.predictedgbm)$overall, KNN=confusionMatrix(train_data_Norm$Survived, result.predictedknn)$overall)
+
+```
+
+##### Main observations on the performance of different models
+1) The GBM model performs slightly better than the RF model in the Cross validation accuracy. 
+2) The difference in the cross validation accuracy and the accuracy in the training data set is lower for GBM model than RF model, indicating a better model with less overfitting. 
+3) KNN also shows a lack of overfitting, but relatively lower accuracy. 
+
+##### Further analysis of GBM model performance 
+```{r, fig.width=5, fig.height=5, warning=FALSE, message=FALSE}
+#GBM model performance plots
+
+#Accuracy as a function of interaction depth
+plot(gbmFitCV, metric = "Accuracy")
+
+#Density plots of Accuracy and Kappa values
+resampleHist(gbmFitCV)
+
+#VariableImportance
+glf<- ((varImp(gbmFitCV, scale = TRUE)))
+plot(glf, top=20)
+
+```
+
+- Based on the feature importances Fare, Gender, Denomination, Age, and PClass are the top five factors in that order. 
+
+- If model is to be simplified, we could try removing Parch and SibSp features. 
+
+- The prediction accuracy expected in the test dataset is ~83% using the GLM model.
+
+## FITTING THE GBM MODEL TO THE TEST DATA SET
+```{r, fig.width=5, fig.height=8, warning=FALSE, message=FALSE}
+#Fitting the model to the test data set. 
+
+DataFile_test = read.csv("//Users//pooja//Desktop//DataScience//Kaggle//TitanicSurvivors//test.csv", na.strings = c("", " "))
+
+missmap(DataFile_test, main = "Missingness Map Train")
+
+test_data <- clean_data(DataFile_test)
+test_data_Norm_Prep <- PrepareForNormalization(test_data)
+test_data_Norm = normalizeFeatures(test_data_Norm_Prep,featureNamesForNorm)
+
+#New Denomination "Dona" in row 415 of data set replaced by Ms.
+
+missing_values = which(!(test_data_Norm$Denomination %in% gbmFitCV$xlevels$Denomination))
+test_data_Norm$Denomination[missing_values] = "Ms"
+
+#Running the Model for the test data set
+
+TestResult.predictedgbm <- predict(gbmFitCV, test_data_Norm)
+PredictedResult <- mutate(test_data_Norm, Survived=TestResult.predictedgbm)
+
+write.csv(PredictedResult, "//Users//pooja//Desktop//DataScience//Kaggle//TitanicSurvivors//PredictedResult.csv")
+
+print('CSV file created!')
+
+
+```
+
