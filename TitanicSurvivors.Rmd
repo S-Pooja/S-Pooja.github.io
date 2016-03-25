@@ -64,8 +64,10 @@ library(caret)
 library(randomForest)
 library(ggplot2)
 library(dplyr)
+library(zoo)
 library(stringr)
 library(reshape2)
+library(e1071)
 library(gridExtra)
 library(RColorBrewer)
 library(lattice)
@@ -434,7 +436,7 @@ plot(glf, top=20)
 
 - If model is to be simplified, we could try removing Parch and SibSp features. 
 
-- The prediction accuracy expected in the test dataset is ~83% using the GBM model.
+- The prediction accuracy expected in the test dataset is ~83% using the GLM model.
 
 ## FITTING THE GBM MODEL TO THE TEST DATA SET
 ```{r, fig.width=5, fig.height=8, warning=FALSE, message=FALSE}
